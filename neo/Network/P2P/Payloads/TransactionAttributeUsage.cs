@@ -3,8 +3,14 @@
     public enum TransactionAttributeUsage : byte
     {
         ContractHash = 0x00,
-
+        /// <summary>
+        /// 用于ECDH密钥交换的公钥，该公钥的第一个字节为0x02
+        /// </summary>
         ECDH02 = 0x02,
+
+        /// <summary>
+        /// 用于ECDH密钥交换的公钥，该公钥的第一个字节为0x03
+        /// </summary>
         ECDH03 = 0x03,
 
         Script = 0x20,

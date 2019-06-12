@@ -60,8 +60,10 @@ namespace Neo.Consensus
             {
                 Block = MakeHeader();
                 if (Block == null) return null;
+                //创建多签合约
                 Contract contract = Contract.CreateMultiSigContract(this.M(), Validators);
                 ContractParametersContext sc = new ContractParametersContext(Block);
+                //添加各个节点的区块签名
                 for (int i = 0, j = 0; i < Validators.Length && j < this.M(); i++)
                 {
                     if (CommitPayloads[i]?.ConsensusMessage.ViewNumber != ViewNumber) continue;
@@ -69,6 +71,7 @@ namespace Neo.Consensus
                     j++;
                 }
                 Block.Witness = sc.GetWitnesses()[0];
+                //将所有transaction存入block中
                 Block.Transactions = TransactionHashes.Select(p => Transactions[p]).ToArray();
             }
             return Block;
@@ -207,7 +210,9 @@ namespace Neo.Consensus
 
         public ConsensusPayload MakePrepareRequest()
         {
+            //装填交易信息
             Fill();
+            //生成共识消息传输数据包并签名
             return PreparationPayloads[MyIndex] = MakeSignedPayload(new PrepareRequest
             {
                 Timestamp = Timestamp,
@@ -360,12 +365,15 @@ namespace Neo.Consensus
         }
 
         private void Fill()
-        {
+        {   //从memory pool取出校验过的transaction
             IEnumerable<Transaction> memoryPoolTransactions = Blockchain.Singleton.MemPool.GetSortedVerifiedTransactions();
+            //插件排序过滤transaction
             foreach (IPolicyPlugin plugin in Plugin.Policies)
                 memoryPoolTransactions = plugin.FilterForBlock(memoryPoolTransactions);
             List<Transaction> transactions = memoryPoolTransactions.ToList();
+            //统计总网络费，用于MinerTransaction
             Fixed8 amountNetFee = Block.CalculateNetFee(transactions);
+            //新建一个网络费的交易输出，用于MinerTransaction
             TransactionOutput[] outputs = amountNetFee == Fixed8.Zero ? new TransactionOutput[0] : new[] { new TransactionOutput
             {
                 AssetId = Blockchain.UtilityToken.Hash,
@@ -374,6 +382,7 @@ namespace Neo.Consensus
             } };
             while (true)
             {
+                //生成MinerTransaction
                 ulong nonce = GetNonce();
                 MinerTransaction tx = new MinerTransaction
                 {
@@ -390,6 +399,7 @@ namespace Neo.Consensus
                     break;
                 }
             }
+            //向ConsensusContext填充TransactionHashes、Transactions、NextConsensus、Timestamp
             TransactionHashes = transactions.Select(p => p.Hash).ToArray();
             Transactions = transactions.ToDictionary(p => p.Hash);
             NextConsensus = Blockchain.GetConsensusAddress(Snapshot.GetValidators(transactions).ToArray());

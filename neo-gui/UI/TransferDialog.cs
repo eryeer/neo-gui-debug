@@ -30,6 +30,7 @@ namespace Neo.UI
 
         public Transaction GetTransaction()
         {
+            //获取非全局资产的cOutput
             var cOutputs = txOutListBox1.Items.Where(p => p.AssetId is UInt160).GroupBy(p => new
             {
                 AssetId = (UInt160)p.AssetId,
@@ -42,12 +43,15 @@ namespace Neo.UI
             }).ToArray();
             Transaction tx;
             List<TransactionAttribute> attributes = new List<TransactionAttribute>();
+            //cOutputs个数为零时代表交易为全局资产交易
             if (cOutputs.Length == 0)
             {
                 tx = new ContractTransaction();
             }
             else
+            //否则为非全局资产交易
             {
+                //获取账户中所有地址
                 UInt160[] addresses = Program.CurrentWallet.GetAccounts().Select(p => p.ScriptHash).ToArray();
                 HashSet<UInt160> sAttributes = new HashSet<UInt160>();
                 using (ScriptBuilder sb = new ScriptBuilder())
@@ -55,6 +59,8 @@ namespace Neo.UI
                     foreach (var output in cOutputs)
                     {
                         byte[] script;
+
+                        //获取账户中各个地址在合约中的金额
                         using (ScriptBuilder sb2 = new ScriptBuilder())
                         {
                             foreach (UInt160 address in addresses)
@@ -70,7 +76,12 @@ namespace Neo.UI
                             Value = i.GetBigInteger()
                         }).ToArray();
                         BigInteger sum = balances.Aggregate(BigInteger.Zero, (x, y) => x + y.Value);
+                        //如果各地址金额总和小于转账金额，则直接返回
                         if (sum < output.Value) return null;
+                        //input'最少原则'
+                        //如果各地址金额总和大于转账金额，则按金额大小倒排各地址，按金额从大到小逐一抵扣转帐金额，
+                        //直到一个地址的金额足以支付转账金额的抵扣余额，这时会找一个地址的金额与转账金额的抵扣余额差值最小的
+                        //一条地址金额，与其他的抵扣地址合并为输入金额。
                         if (sum != output.Value)
                         {
                             balances = balances.OrderByDescending(p => p.Value).ToArray();
@@ -85,11 +96,13 @@ namespace Neo.UI
                             sum = balances.Aggregate(BigInteger.Zero, (x, y) => x + y.Value);
                         }
                         sAttributes.UnionWith(balances.Select(p => p.Account));
+                        //组装转账脚本
                         for (int i = 0; i < balances.Length; i++)
                         {
                             BigInteger value = balances[i].Value;
                             if (i == 0)
                             {
+                                //将找零给了第一个地址
                                 BigInteger change = sum - output.Value;
                                 if (change > 0) value -= change;
                             }
@@ -97,12 +110,14 @@ namespace Neo.UI
                             sb.Emit(OpCode.THROWIFNOT);
                         }
                     }
+                    //将交易封装成InvocationTransaction类型
                     tx = new InvocationTransaction
                     {
                         Version = 1,
                         Script = sb.ToArray()
                     };
                 }
+                //添加交易属性
                 attributes.AddRange(sAttributes.Select(p => new TransactionAttribute
                 {
                     Usage = TransactionAttributeUsage.Script,
@@ -117,6 +132,7 @@ namespace Neo.UI
                 });
             tx.Attributes = attributes.ToArray();
             tx.Outputs = txOutListBox1.Items.Where(p => p.AssetId is UInt256).Select(p => p.ToTxOutput()).ToArray();
+            //处理全局资产交易，封装input、找零output
             if (tx is ContractTransaction ctx)
                 tx = Program.CurrentWallet.MakeTransaction(ctx, change_address: ChangeAddress, fee: Fee);
             return tx;

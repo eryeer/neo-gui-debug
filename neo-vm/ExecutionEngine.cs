@@ -207,6 +207,7 @@ namespace Neo.VM
                 try
                 {
                     Instruction instruction = CurrentContext.CurrentInstruction;
+                    //执行脚本的前处理、处理、后处理
                     if (!PreExecuteInstruction() || !ExecuteInstruction() || !PostExecuteInstruction(instruction))
                         State = VMState.FAULT;
                 }

@@ -70,6 +70,7 @@ namespace Neo.Wallets
 
         protected static Coin[] FindUnspentCoins(IEnumerable<Coin> unspents, UInt256 asset_id, Fixed8 amount)
         {
+            //使用和非全局资产相类似的'最少原则'寻找UTXO
             Coin[] unspents_asset = unspents.Where(p => p.Output.AssetId == asset_id).ToArray();
             Fixed8 sum = unspents_asset.Sum(p => p.Output.Value);
             if (sum < amount) return null;
@@ -219,17 +220,20 @@ namespace Neo.Wallets
             Array.Clear(privateKey, 0, privateKey.Length);
             return account;
         }
-
+        //组装UTXO的transaction，InvocationTransaction、ContractTransaction、
+        //IssueTransatcion、StateTransaction都会调用此方法
         public T MakeTransaction<T>(T tx, UInt160 from = null, UInt160 change_address = null, Fixed8 fee = default(Fixed8)) where T : Transaction
         {
             if (tx.Outputs == null) tx.Outputs = new TransactionOutput[0];
             if (tx.Attributes == null) tx.Attributes = new TransactionAttribute[0];
             fee += tx.SystemFee;
+            //计算支付总金额
             var pay_total = (typeof(T) == typeof(IssueTransaction) ? new TransactionOutput[0] : tx.Outputs).GroupBy(p => p.AssetId, (k, g) => new
             {
                 AssetId = k,
                 Value = g.Sum(p => p.Value)
             }).ToDictionary(p => p.AssetId);
+            //如果网络费大于0，则在支付总金额中加入网络费
             if (fee > Fixed8.Zero)
             {
                 if (pay_total.ContainsKey(Blockchain.UtilityToken.Hash))
@@ -249,12 +253,14 @@ namespace Neo.Wallets
                     });
                 }
             }
+            //按照'最少原则'寻找用来支付的UTXO，如果设置了找零地址，就从找零地址中找UTXO，否则，从账户的全部地址中找UTXO
             var pay_coins = pay_total.Select(p => new
             {
                 AssetId = p.Key,
                 Unspents = from == null ? FindUnspentCoins(p.Key, p.Value.Value) : FindUnspentCoins(p.Key, p.Value.Value, from)
             }).ToDictionary(p => p.AssetId);
             if (pay_coins.Any(p => p.Value.Unspents == null)) return null;
+            //由用来支付的UTXO计算总输入金额
             var input_sum = pay_coins.Values.ToDictionary(p => p.AssetId, p => new
             {
                 p.AssetId,
@@ -262,6 +268,7 @@ namespace Neo.Wallets
             });
             if (change_address == null) change_address = GetChangeAddress();
             List<TransactionOutput> outputs_new = new List<TransactionOutput>(tx.Outputs);
+            //添加找零的output
             foreach (UInt256 asset_id in input_sum.Keys)
             {
                 if (input_sum[asset_id].Value > pay_total[asset_id].Value)
@@ -274,6 +281,7 @@ namespace Neo.Wallets
                     });
                 }
             }
+            //封装tx的input和output
             tx.Inputs = pay_coins.Values.SelectMany(p => p.Unspents).Select(p => p.Reference).ToArray();
             tx.Outputs = outputs_new.ToArray();
             return tx;
@@ -388,9 +396,12 @@ namespace Neo.Wallets
             bool fSuccess = false;
             foreach (UInt160 scriptHash in context.ScriptHashes)
             {
+                //根据地址获取账户信息
                 WalletAccount account = GetAccount(scriptHash);
                 if (account?.HasKey != true) continue;
+                //获取公私钥对
                 KeyPair key = account.GetKey();
+                //生成签名
                 byte[] signature = context.Verifiable.Sign(key);
                 fSuccess |= context.AddSignature(account.Contract, key.PublicKey, signature);
             }

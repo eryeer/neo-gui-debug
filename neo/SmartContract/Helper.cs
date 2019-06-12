@@ -89,6 +89,7 @@ namespace Neo.SmartContract
             UInt160[] hashes;
             try
             {
+                //获取需要校验的所有地址的ScriptHashes
                 hashes = verifiable.GetScriptHashesForVerifying(snapshot);
             }
             catch (InvalidOperationException)
@@ -99,6 +100,7 @@ namespace Neo.SmartContract
             for (int i = 0; i < hashes.Length; i++)
             {
                 byte[] verification = verifiable.Witnesses[i].VerificationScript;
+                //verificationScript缺失的处理
                 if (verification.Length == 0)
                 {
                     using (ScriptBuilder sb = new ScriptBuilder())
@@ -113,6 +115,7 @@ namespace Neo.SmartContract
                 }
                 using (ApplicationEngine engine = new ApplicationEngine(TriggerType.Verification, verifiable, snapshot, Fixed8.Zero))
                 {
+                    //调用verification和InvocationScript脚本进行验签
                     engine.LoadScript(verification);
                     engine.LoadScript(verifiable.Witnesses[i].InvocationScript);
                     engine.Execute();

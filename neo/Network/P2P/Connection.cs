@@ -98,6 +98,9 @@ namespace Neo.Network.P2P
             }
         }
 
+        /**
+         接受tcp消息
+             */
         private void OnReceived(ByteString data)
         {
             timer.CancelIfNotNull();
@@ -125,6 +128,7 @@ namespace Neo.Network.P2P
         {
             if (tcp != null)
             {
+                //通过tcp通讯发送消息给其他节点
                 tcp.Tell(Tcp.Write.Create(data, Ack.Instance));
             }
             else

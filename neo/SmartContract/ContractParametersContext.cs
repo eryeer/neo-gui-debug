@@ -25,7 +25,7 @@ namespace Neo.SmartContract
 
             public ContextItem(Contract contract)
             {
-                this.Script = contract.Script;
+                this.Script = contract.Script; //验证脚本
                 this.Parameters = contract.ParameterList.Select(p => new ContractParameter { Type = p }).ToArray();
             }
 
@@ -94,6 +94,7 @@ namespace Neo.SmartContract
 
         public bool Add(Contract contract, int index, object parameter)
         {
+            //将签名（调用脚本）保存在ContexItem的Parameters属性数组的值里，将script（验证脚本）从contract中取出，保存到ContexItem的script里
             ContextItem item = CreateItem(contract);
             if (item == null) return false;
             item.Parameters[index].Value = parameter;
@@ -102,6 +103,7 @@ namespace Neo.SmartContract
 
         public bool AddSignature(Contract contract, ECPoint pubkey, byte[] signature)
         {
+            //多签
             if (contract.Script.IsMultiSigContract())
             {
                 ContextItem item = CreateItem(contract);
@@ -152,7 +154,9 @@ namespace Neo.SmartContract
             }
             else
             {
+                //单个签名
                 int index = -1;
+                //校验签名只能有一个
                 for (int i = 0; i < contract.ParameterList.Length; i++)
                     if (contract.ParameterList[i] == ContractParameterType.Signature)
                         if (index >= 0)
@@ -176,6 +180,7 @@ namespace Neo.SmartContract
                 return item;
             if (!ScriptHashes.Contains(contract.ScriptHash))
                 return null;
+            //将script（验证脚本）从contract中取出，保存到ContexItem的script里
             item = new ContextItem(contract);
             ContextItems.Add(contract.ScriptHash, item);
             return item;
@@ -219,6 +224,8 @@ namespace Neo.SmartContract
                 ContextItem item = ContextItems[ScriptHashes[i]];
                 using (ScriptBuilder sb = new ScriptBuilder())
                 {
+                    //将签名（调用脚本）从ContextItem的parameters属性中取出，
+                    //转换成字节数组存入InvocationScript
                     foreach (ContractParameter parameter in item.Parameters.Reverse())
                     {
                         sb.EmitPush(parameter);
@@ -226,6 +233,8 @@ namespace Neo.SmartContract
                     witnesses[i] = new Witness
                     {
                         InvocationScript = sb.ToArray(),
+                        //将验证脚本从从ContextItem的Script属性中取出，
+                        //存入VerificationScript
                         VerificationScript = item.Script ?? new byte[0]
                     };
                 }

@@ -43,6 +43,7 @@ namespace Neo.Network.P2P
         private void CheckMessageQueue()
         {
             if (!verack || !ack) return;
+            //先发高优先级的消息，再发低优先级消息
             Queue<Message> queue = message_queue_high;
             if (queue.Count == 0) queue = message_queue_low;
             if (queue.Count == 0) return;
@@ -57,6 +58,7 @@ namespace Neo.Network.P2P
         private void EnqueueMessage(Message message)
         {
             bool is_single = false;
+            //标识消息是否是唯一的
             switch (message.Command)
             {
                 case "addr":
@@ -70,6 +72,7 @@ namespace Neo.Network.P2P
                     break;
             }
             Queue<Message> message_queue;
+            //表示消息的优先级
             switch (message.Command)
             {
                 case "alert":
@@ -85,6 +88,7 @@ namespace Neo.Network.P2P
                     message_queue = message_queue_low;
                     break;
             }
+            //唯一的消息同一时间在消息队列中只有一条在排队
             if (!is_single || message_queue.All(p => p.Command != message.Command))
                 message_queue.Enqueue(message);
             CheckMessageQueue();
@@ -99,6 +103,7 @@ namespace Neo.Network.P2P
         protected override void OnData(ByteString data)
         {
             msg_buffer = msg_buffer.Concat(data);
+            //将ByteString类的消息转成Message类的对象并调用ProtocolHandler处理
             for (Message message = TryParseMessage(); message != null; message = TryParseMessage())
                 protocol.Tell(message);
         }
@@ -146,6 +151,7 @@ namespace Neo.Network.P2P
                 if (bloom_filter != null && !bloom_filter.Test((Transaction)inventory))
                     return;
             }
+            //将tx的hash和type封装成inv消息并发出
             EnqueueMessage("inv", InvPayload.Create(inventory.InventoryType, inventory.Hash));
         }
 
@@ -203,6 +209,7 @@ namespace Neo.Network.P2P
         private void SendMessage(Message message)
         {
             ack = false;
+            //将消息封装成ByteString发送
             SendData(ByteString.FromBytes(message.ToArray()));
         }
 

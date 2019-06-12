@@ -98,6 +98,7 @@ namespace Neo.Wallets.NEP6
             {
                 unconfirmed[tx.Hash] = tx;
             }
+            //触发钱包事件调用
             WalletTransaction?.Invoke(this, new WalletTransactionEventArgs
             {
                 Transaction = tx,

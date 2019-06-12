@@ -183,10 +183,12 @@ namespace Neo.Network.P2P
             UInt256[] hashes = payload.Hashes.Where(p => sentHashes.Add(p)).ToArray();
             foreach (UInt256 hash in hashes)
             {
+                //先从缓存中尝试获取tx
                 Blockchain.Singleton.RelayCache.TryGet(hash, out IInventory inventory);
                 switch (payload.Type)
                 {
                     case InventoryType.TX:
+                        //如果缓存中没有tx，则从db中获取tx
                         if (inventory == null)
                             inventory = Blockchain.Singleton.GetTransaction(hash);
                         if (inventory is Transaction)
@@ -246,13 +248,16 @@ namespace Neo.Network.P2P
 
         private void OnInventoryReceived(IInventory inventory)
         {
+            //通知taskmanager 任务结束。
             system.TaskManager.Tell(new TaskManager.TaskCompleted { Hash = inventory.Hash }, Context.Parent);
             if (inventory is MinerTransaction) return;
+            //校验tx，添加到memoryPool，并转发其他节点
             system.LocalNode.Tell(new LocalNode.Relay { Inventory = inventory });
         }
 
         private void OnInvMessageReceived(InvPayload payload)
         {
+            //将tx的hash添加到已知hash集合
             UInt256[] hashes = payload.Hashes.Where(p => knownHashes.Add(p)).ToArray();
             if (hashes.Length == 0) return;
             switch (payload.Type)
@@ -262,11 +267,13 @@ namespace Neo.Network.P2P
                         hashes = hashes.Where(p => !snapshot.ContainsBlock(p)).ToArray();
                     break;
                 case InventoryType.TX:
+                    //排除当前db的snapshot中存在的tx的hash
                     using (Snapshot snapshot = Blockchain.Singleton.GetSnapshot())
                         hashes = hashes.Where(p => !snapshot.ContainsTransaction(p)).ToArray();
                     break;
             }
             if (hashes.Length == 0) return;
+            //调用TaskManager发起获取tx的task
             system.TaskManager.Tell(new TaskManager.NewTasks { Payload = InvPayload.Create(payload.Type, hashes) }, Context.Parent);
         }
 

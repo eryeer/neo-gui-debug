@@ -40,6 +40,7 @@ namespace Neo.UI
             ContractParametersContext context;
             try
             {
+                //将交易封装到ContractParametersContext
                 context = new ContractParametersContext(tx);
             }
             catch (InvalidOperationException)
@@ -47,11 +48,15 @@ namespace Neo.UI
                 MessageBox.Show(Strings.UnsynchronizedBlock);
                 return;
             }
+            //对交易签名
             Program.CurrentWallet.Sign(context);
             if (context.Completed)
             {
+                //将签名封装到Witnesses属性
                 tx.Witnesses = context.GetWitnesses();
+                //调用响应事件更新钱包展示信息数据
                 Program.CurrentWallet.ApplyTransaction(tx);
+                //通知LocalNode转发交易进行验证
                 Program.NeoSystem.LocalNode.Tell(new LocalNode.Relay { Inventory = tx });
                 InformationBox.Show(tx.Hash.ToString(), Strings.SendTxSucceedMessage, Strings.SendTxSucceedTitle);
             }

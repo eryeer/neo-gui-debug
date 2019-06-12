@@ -112,10 +112,13 @@ namespace Neo.Consensus
 
         private void CheckCommits()
         {
+            //收到足够的Commit并且所有的transaction后出块
             if (context.CommitPayloads.Count(p => p?.ConsensusMessage.ViewNumber == context.ViewNumber) >= context.M() && context.TransactionHashes.All(p => context.Transactions.ContainsKey(p)))
             {
+                //添加各个节点的区块签名，将所有transaction存入block中
                 Block block = context.CreateBlock();
                 Log($"relay block: height={block.Index} hash={block.Hash} tx={block.Transactions.Length}");
+                //通过localNode异步通知BlockChain类进行新区块处理
                 localNode.Tell(new LocalNode.Relay { Inventory = block });
             }
         }
@@ -204,6 +207,7 @@ namespace Neo.Consensus
         private void OnCommitReceived(ConsensusPayload payload, Commit commit)
         {
             ref ConsensusPayload existingCommitPayload = ref context.CommitPayloads[payload.ValidatorIndex];
+            //校验Payload
             if (existingCommitPayload != null)
             {
                 if (existingCommitPayload.Hash != payload.Hash)
@@ -224,10 +228,12 @@ namespace Neo.Consensus
                 {
                     existingCommitPayload = payload;
                 }
+                //如果区块头hash验签成功，则发起检查commit
                 else if (Crypto.Default.VerifySignature(hashData, commit.Signature,
                     context.Validators[payload.ValidatorIndex].EncodePoint(false)))
                 {
                     existingCommitPayload = payload;
+                    //检查出块条件准备出块
                     CheckCommits();
                 }
                 return;
@@ -542,6 +548,7 @@ namespace Neo.Consensus
             if (context.WatchOnly() || context.BlockSent()) return;
             if (timer.Height != context.BlockIndex || timer.ViewNumber != context.ViewNumber) return;
             Log($"timeout: height={timer.Height} view={timer.ViewNumber}");
+            //当是议长节点，且PreparationPayloads没有发出过时，发送prepareRequest
             if (context.IsPrimary() && !context.RequestSentOrReceived())
             {
                 SendPrepareRequest();
@@ -568,6 +575,7 @@ namespace Neo.Consensus
             if (!context.IsBackup() || context.NotAcceptingPayloadsDueToViewChanging() || !context.RequestSentOrReceived() || context.ResponseSent() || context.BlockSent())
                 return;
             if (context.Transactions.ContainsKey(transaction.Hash)) return;
+            //如果共识上下文中不包含改transactionHash，则返回
             if (!context.TransactionHashes.Contains(transaction.Hash)) return;
             AddTransaction(transaction, true);
         }
@@ -616,11 +624,12 @@ namespace Neo.Consensus
         private void SendPrepareRequest()
         {
             Log($"send prepare request: height={context.BlockIndex} view={context.ViewNumber}");
+            //生成并转发共识用的ConsensusPayload(提案块)
             localNode.Tell(new LocalNode.SendDirectly { Inventory = context.MakePrepareRequest() });
-
+            
             if (context.Validators.Length == 1)
                 CheckPreparations();
-
+            //转发交易的inv
             if (context.TransactionHashes.Length > 1)
             {
                 foreach (InvPayload payload in InvPayload.CreateGroup(InventoryType.TX, context.TransactionHashes.Skip(1).ToArray()))

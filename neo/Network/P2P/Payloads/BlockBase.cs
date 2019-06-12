@@ -112,9 +112,13 @@ namespace Neo.Network.P2P.Payloads
         public virtual bool Verify(Snapshot snapshot)
         {
             Header prev_header = snapshot.GetHeader(PrevHash);
+            //检查上一个区块是否存在
             if (prev_header == null) return false;
+            //检查上一个区块高度，是否等于当前区块高度-1
             if (prev_header.Index + 1 != Index) return false;
+            //检查上一个区块时间戳，是否小于当前区块时间戳
             if (prev_header.Timestamp >= Timestamp) return false;
+            //见证人脚本为上一区块的NextConsensus字段，即多方签名脚本
             if (!this.VerifyWitnesses(snapshot)) return false;
             return true;
         }

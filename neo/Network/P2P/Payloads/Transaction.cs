@@ -190,12 +190,15 @@ namespace Neo.Network.P2P.Payloads
         public virtual UInt160[] GetScriptHashesForVerifying(Snapshot snapshot)
         {
             if (References == null) throw new InvalidOperationException();
+            /// 1. 交易输入所指向的付款人地址脚本hash
             HashSet<UInt160> hashes = new HashSet<UInt160>(Inputs.Select(p => References[p].ScriptHash));
+            /// 2. 交易属性为script时，包含该Data
             hashes.UnionWith(Attributes.Where(p => p.Usage == TransactionAttributeUsage.Script).Select(p => new UInt160(p.Data)));
             foreach (var group in Outputs.GroupBy(p => p.AssetId))
             {
                 AssetState asset = snapshot.Assets.TryGet(group.Key);
                 if (asset == null) throw new InvalidOperationException();
+                /// 3. 若资产类型包含AssetType.DutyFlag时，包含收款人地址脚本hash
                 if (asset.AssetType.HasFlag(AssetType.DutyFlag))
                 {
                     hashes.UnionWith(group.Select(p => p.ScriptHash));
@@ -270,33 +273,41 @@ namespace Neo.Network.P2P.Payloads
         public virtual bool Verify(Snapshot snapshot, IEnumerable<Transaction> mempool)
         {
             if (Size > MaxTransactionSize) return false;
+            //交易输入不重复
             for (int i = 1; i < Inputs.Length; i++)
                 for (int j = 0; j < i; j++)
                     if (Inputs[i].PrevHash == Inputs[j].PrevHash && Inputs[i].PrevIndex == Inputs[j].PrevIndex)
                         return false;
             if (mempool.Where(p => p != this).SelectMany(p => p.Inputs).Intersect(Inputs).Count() > 0)
                 return false;
+            //交易输入不能是已经花费的
             if (snapshot.IsDoubleSpend(this))
                 return false;
             foreach (var group in Outputs.GroupBy(p => p.AssetId))
             {
                 AssetState asset = snapshot.Assets.TryGet(group.Key);
                 if (asset == null) return false;
+                //资产不能是过期资产
                 if (asset.Expiration <= snapshot.Height + 1 && asset.AssetType != AssetType.GoverningToken && asset.AssetType != AssetType.UtilityToken)
                     return false;
+                //检查output金额格式
                 foreach (TransactionOutput output in group)
                     if (output.Value.GetData() % (long)Math.Pow(10, 8 - asset.Precision) != 0)
                         return false;
             }
+            //计算交易手续费金额
             TransactionResult[] results = GetTransactionResults()?.ToArray();
             if (results == null) return false;
             TransactionResult[] results_destroy = results.Where(p => p.Amount > Fixed8.Zero).ToArray();
             if (results_destroy.Length > 1) return false;
+            //如果只花费一种资产手续费，则必须是gas
             if (results_destroy.Length == 1 && results_destroy[0].AssetId != Blockchain.UtilityToken.Hash)
                 return false;
+            //手续费必须足够支付系统费
             if (SystemFee > Fixed8.Zero && (results_destroy.Length == 0 || results_destroy[0].Amount < SystemFee))
                 return false;
             TransactionResult[] results_issue = results.Where(p => p.Amount < Fixed8.Zero).ToArray();
+            //资产类型必须正确
             switch (Type)
             {
                 case TransactionType.MinerTransaction:
@@ -313,8 +324,10 @@ namespace Neo.Network.P2P.Payloads
                         return false;
                     break;
             }
+            //检验属性
             if (Attributes.Count(p => p.Usage == TransactionAttributeUsage.ECDH02 || p.Usage == TransactionAttributeUsage.ECDH03) > 1)
                 return false;
+            //校验签名脚本
             if (!VerifyReceivingScripts()) return false;
             return this.VerifyWitnesses(snapshot);
         }

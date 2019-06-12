@@ -121,6 +121,7 @@ namespace Neo.UI
             button5.Enabled = textBox6.TextLength > 0;
         }
 
+        //在调用合约之前要进行脚本测试
         private void button5_Click(object sender, EventArgs e)
         {
             byte[] script;
@@ -140,6 +141,7 @@ namespace Neo.UI
             if (tx.Inputs == null) tx.Inputs = new CoinReference[0];
             if (tx.Outputs == null) tx.Outputs = new TransactionOutput[0];
             if (tx.Witnesses == null) tx.Witnesses = new Witness[0];
+            //调用虚拟机进行脚本测试
             ApplicationEngine engine = ApplicationEngine.Run(tx.Script, tx, testMode: true);
             StringBuilder sb = new StringBuilder();
             sb.AppendLine($"VM State: {engine.State}");
@@ -148,6 +150,7 @@ namespace Neo.UI
             textBox7.Text = sb.ToString();
             if (!engine.State.HasFlag(VMState.FAULT))
             {
+                //进行tx的gas消耗计算，扣减10gas的免费额度，并将gas向上取整
                 tx.Gas = engine.GasConsumed - Fixed8.FromDecimal(10);
                 if (tx.Gas < Fixed8.Zero) tx.Gas = Fixed8.Zero;
                 tx.Gas = tx.Gas.Ceiling();

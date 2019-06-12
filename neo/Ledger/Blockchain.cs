@@ -116,6 +116,7 @@ namespace Neo.Ledger
         private const int MaxTxToReverifyPerIdle = 10;
         private static readonly object lockObj = new object();
         private readonly NeoSystem system;
+        //区块头索引hash列表
         private readonly List<UInt256> header_index = new List<UInt256>();
         private uint stored_header_count = 0;
         private readonly Dictionary<UInt256, Block> block_cache = new Dictionary<UInt256, Block>();
@@ -276,25 +277,34 @@ namespace Neo.Ledger
 
         private RelayResultReason OnNewBlock(Block block)
         {
+            //若区块已存在，返回AlreadyExists
             if (block.Index <= Height)
                 return RelayResultReason.AlreadyExists;
             if (block_cache.ContainsKey(block.Hash))
                 return RelayResultReason.AlreadyExists;
+            //若区块的索引高度-1大于等于当前区块头索引数量，加入到未校验区块列表并返回UnableToVerify
             if (block.Index - 1 >= header_index.Count)
             {
                 AddUnverifiedBlockToCache(block);
                 return RelayResultReason.UnableToVerify;
             }
+            //若区块的索引等于区块头索引数量，根据当前区块快照，校验该区块，如失败返回Invalid；
             if (block.Index == header_index.Count)
             {
+                //检查上一个区块是否存在
+                //检查上一个区块高度，是否等于当前区块高度 - 1                //检查上一个区块时间戳，是否小于当前区块时间戳
                 if (!block.Verify(currentSnapshot))
                     return RelayResultReason.Invalid;
             }
             else
             {
+                //否则为已有区块头的区块，将区块hash与header_index中对应高度的hash比较，不相等返回Invalid
                 if (!block.Hash.Equals(header_index[(int)block.Index]))
                     return RelayResultReason.Invalid;
             }
+            //若block.Index 为本地区块高度 + 1，找出缓存block_cache中包含的从该Block
+            //之后的所有连续区块并Persist，若区块落后区块头不多，则广播最后的两个Block，
+            //保存HeaderHashList。
             if (block.Index == Height + 1)
             {
                 Block block_persist = block;
@@ -311,12 +321,13 @@ namespace Neo.Ledger
                 foreach (Block blockToPersist in blocksToPersistList)
                 {
                     block_cache_unverified.Remove(blockToPersist.Index);
+                    //保存区块
                     Persist(blockToPersist);
 
                     if (blocksPersisted++ < blocksToPersistList.Count - (2 + Math.Max(0,(15 - SecondsPerBlock)))) continue;
                     // Empirically calibrated for relaying the most recent 2 blocks persisted with 15s network
                     // Increase in the rate of 1 block per second in configurations with faster blocks
-
+                    //如果落后不多，则将最后两个区块发出，给其他节点同步区块
                     if (blockToPersist.Index + 100 >= header_index.Count)
                         system.LocalNode.Tell(new LocalNode.RelayDirectly { Inventory = blockToPersist });
                 }
@@ -331,6 +342,8 @@ namespace Neo.Ledger
             }
             else
             {
+                //如果区块索引大于本地区块高度+1，则该区块无法在本地persist，加入block_cache暂存并且直接转发。
+                //如果block索引为区块头索引的下一个，则添加将block索引到区块头索引,并保存trimmedBlock。
                 block_cache.Add(block.Hash, block);
                 if (block.Index + 100 >= header_index.Count)
                     system.LocalNode.Tell(new LocalNode.RelayDirectly { Inventory = block });
@@ -391,28 +404,37 @@ namespace Neo.Ledger
 
         private RelayResultReason OnNewTransaction(Transaction transaction)
         {
+            //非矿工交易
             if (transaction.Type == TransactionType.MinerTransaction)
                 return RelayResultReason.Invalid;
+            //交易池memorypool中不能存在该交易
             if (ContainsTransaction(transaction.Hash))
                 return RelayResultReason.AlreadyExists;
+            //memorypool存储空间是否够用
             if (!MemPool.CanTransactionFitInPool(transaction))
                 return RelayResultReason.OutOfMemory;
+            //校验交易
             if (!transaction.Verify(currentSnapshot, MemPool.GetVerifiedTransactions()))
                 return RelayResultReason.Invalid;
+            //插件校验
             if (!Plugin.CheckPolicy(transaction))
                 return RelayResultReason.PolicyFail;
-
+            //尝试添加交易到memoryPool
             if (!MemPool.TryAdd(transaction.Hash, transaction))
                 return RelayResultReason.OutOfMemory;
 
+            //开始交易广播流程
             system.LocalNode.Tell(new LocalNode.RelayDirectly { Inventory = transaction });
             return RelayResultReason.Succeed;
         }
 
         private void OnPersistCompleted(Block block)
         {
+            //清理block_cache中的缓存
             block_cache.Remove(block.Hash);
+            //更新memoryPool，删除已经打包出块的交易，将MomoryPool中所有没有出块的交易加入未验证交易集合
             MemPool.UpdatePoolForBlockPersisted(block, currentSnapshot);
+            //通知ConsensusService重新准备共识，通知钱包更新交易确认数量
             Context.System.EventStream.Publish(new PersistCompleted { Block = block });
         }
 
@@ -448,8 +470,10 @@ namespace Neo.Ledger
         private void Persist(Block block)
         {
             using (Snapshot snapshot = GetSnapshot())
-            {
+            {   
+                
                 List<ApplicationExecuted> all_application_executed = new List<ApplicationExecuted>();
+                //保存block到snapshot
                 snapshot.PersistingBlock = block;
                 snapshot.Blocks.Add(block.Hash, new BlockState
                 {
@@ -458,11 +482,13 @@ namespace Neo.Ledger
                 });
                 foreach (Transaction tx in block.Transactions)
                 {
+                    //保存transaction到snapshot
                     snapshot.Transactions.Add(tx.Hash, new TransactionState
                     {
                         BlockIndex = block.Index,
                         Transaction = tx
                     });
+                    //保存unspentCoins到snapshot
                     snapshot.UnspentCoins.Add(tx.Hash, new UnspentCoinState
                     {
                         Items = Enumerable.Repeat(CoinState.Confirmed, tx.Outputs.Length).ToArray()
@@ -470,10 +496,12 @@ namespace Neo.Ledger
                     foreach (TransactionOutput output in tx.Outputs)
                     {
                         AccountState account = snapshot.Accounts.GetAndChange(output.ScriptHash, () => new AccountState(output.ScriptHash));
+                        //将output的金额结算到account的balance中
                         if (account.Balances.ContainsKey(output.AssetId))
                             account.Balances[output.AssetId] += output.Value;
                         else
                             account.Balances[output.AssetId] = output.Value;
+                        //将每个Validator的投票数、Validator数量的投票数结算保存到snapshot
                         if (output.AssetId.Equals(GoverningToken.Hash) && account.Votes.Length > 0)
                         {
                             foreach (ECPoint pubkey in account.Votes)
@@ -486,9 +514,11 @@ namespace Neo.Ledger
                         TransactionState tx_prev = snapshot.Transactions[group.Key];
                         foreach (CoinReference input in group)
                         {
+                            //将input对应的上一笔交易的未花费的coin标记为已花费
                             snapshot.UnspentCoins.GetAndChange(input.PrevHash).Items[input.PrevIndex] |= CoinState.Spent;
                             TransactionOutput out_prev = tx_prev.Transaction.Outputs[input.PrevIndex];
                             AccountState account = snapshot.Accounts.GetAndChange(out_prev.ScriptHash);
+                            //保存已花费的记录
                             if (out_prev.AssetId.Equals(GoverningToken.Hash))
                             {
                                 snapshot.SpentCoins.GetAndChange(input.PrevHash, () => new SpentCoinState
@@ -497,6 +527,7 @@ namespace Neo.Ledger
                                     TransactionHeight = tx_prev.BlockIndex,
                                     Items = new Dictionary<ushort, uint>()
                                 }).Items.Add(input.PrevIndex, block.Index);
+                                //将每个Validator的投票数、Validator数量的投票数结算保存到snapshot
                                 if (account.Votes.Length > 0)
                                 {
                                     foreach (ECPoint pubkey in account.Votes)
@@ -509,6 +540,7 @@ namespace Neo.Ledger
                                     snapshot.ValidatorsCount.GetAndChange().Votes[account.Votes.Length - 1] -= out_prev.Value;
                                 }
                             }
+                            //计算input账户剩余金额
                             account.Balances[out_prev.AssetId] -= out_prev.Value;
                         }
                     }
@@ -517,6 +549,7 @@ namespace Neo.Ledger
                     {
 #pragma warning disable CS0612
                         case RegisterTransaction tx_register:
+                            //登记新资产（弃用）
                             snapshot.Assets.Add(tx.Hash, new AssetState
                             {
                                 AssetId = tx_register.Hash,
@@ -536,10 +569,12 @@ namespace Neo.Ledger
                             break;
 #pragma warning restore CS0612
                         case IssueTransaction _:
+                            //更新资产表，扣除总资产中已发行的部分
                             foreach (TransactionResult result in tx.GetTransactionResults().Where(p => p.Amount < Fixed8.Zero))
                                 snapshot.Assets.GetAndChange(result.AssetId).Available -= result.Amount;
                             break;
                         case ClaimTransaction _:
+                            //将input的交易从spentcoins中删除
                             foreach (CoinReference input in ((ClaimTransaction)tx).Claims)
                             {
                                 if (snapshot.SpentCoins.TryGet(input.PrevHash)?.Items.Remove(input.PrevIndex) == true)
@@ -548,6 +583,7 @@ namespace Neo.Ledger
                             break;
 #pragma warning disable CS0612
                         case EnrollmentTransaction tx_enrollment:
+                            //已弃用，注册validator
                             snapshot.Validators.GetAndChange(tx_enrollment.PublicKey, () => new ValidatorState(tx_enrollment.PublicKey)).Registered = true;
                             break;
 #pragma warning restore CS0612
@@ -555,9 +591,11 @@ namespace Neo.Ledger
                             foreach (StateDescriptor descriptor in tx_state.Descriptors)
                                 switch (descriptor.Type)
                                 {
+                                    //投票处理
                                     case StateType.Account:
                                         ProcessAccountStateDescriptor(descriptor, snapshot);
                                         break;
+                                    //申请验证人处理
                                     case StateType.Validator:
                                         ProcessValidatorStateDescriptor(descriptor, snapshot);
                                         break;
@@ -565,6 +603,7 @@ namespace Neo.Ledger
                             break;
 #pragma warning disable CS0612
                         case PublishTransaction tx_publish:
+                            //弃用
                             snapshot.Contracts.GetOrAdd(tx_publish.ScriptHash, () => new ContractState
                             {
                                 Script = tx_publish.Script,
@@ -580,14 +619,18 @@ namespace Neo.Ledger
                             break;
 #pragma warning restore CS0612
                         case InvocationTransaction tx_invocation:
+                            //调用VM进行合约执行
+                            //将执行结果添加到结果集中
                             using (ApplicationEngine engine = new ApplicationEngine(TriggerType.Application, tx_invocation, snapshot.Clone(), tx_invocation.Gas))
                             {
                                 engine.LoadScript(tx_invocation.Script);
                                 engine.Execute();
+                                //提交执行结果
                                 if (!engine.State.HasFlag(VMState.FAULT))
                                 {
                                     engine.Service.Commit();
                                 }
+                                //添加执行结果
                                 execution_results.Add(new ApplicationExecutionResult
                                 {
                                     Trigger = TriggerType.Application,
@@ -600,6 +643,7 @@ namespace Neo.Ledger
                             }
                             break;
                     }
+                    //将执行结果添加到总结果集中
                     if (execution_results.Count > 0)
                     {
                         ApplicationExecuted application_executed = new ApplicationExecuted
@@ -611,6 +655,8 @@ namespace Neo.Ledger
                         all_application_executed.Add(application_executed);
                     }
                 }
+
+                //更新区块和区块头信息
                 snapshot.BlockHashIndex.GetAndChange().Hash = block.Hash;
                 snapshot.BlockHashIndex.GetAndChange().Index = block.Index;
                 if (block.Index == header_index.Count)
@@ -619,10 +665,13 @@ namespace Neo.Ledger
                     snapshot.HeaderHashIndex.GetAndChange().Hash = block.Hash;
                     snapshot.HeaderHashIndex.GetAndChange().Index = block.Index;
                 }
+                //合约执行结果（applicationLog）等插件处理
                 foreach (IPersistencePlugin plugin in Plugin.PersistencePlugins)
                     plugin.OnPersist(snapshot, all_application_executed);
+                //提交snapshot
                 snapshot.Commit();
                 List<Exception> commitExceptions = null;
+                //Dump（StatesDumper）等插件处理
                 foreach (IPersistencePlugin plugin in Plugin.PersistencePlugins)
                 {
                     try
@@ -642,7 +691,13 @@ namespace Neo.Ledger
                 }
                 if (commitExceptions != null) throw new AggregateException(commitExceptions);
             }
+            //更新CurrentSnapshot
             UpdateCurrentSnapshot();
+            //Persist后处理，包含：
+            //1.清理block_cache
+            //2.更新memoryPool，删除已经打包出块的交易，
+            //  将MomoryPool中所有没有出块的交易加入未验证交易集合
+            //3.通知ConsensusService重新准备共识，通知钱包更新交易涉及的资产统计
             OnPersistCompleted(block);
         }
 
@@ -660,6 +715,7 @@ namespace Neo.Ledger
             {
                 case "Votes":
                     Fixed8 balance = account.GetBalance(GoverningToken.Hash);
+                    //扣除以前的投票
                     foreach (ECPoint pubkey in account.Votes)
                     {
                         ValidatorState validator = snapshot.Validators.GetAndChange(pubkey);
@@ -668,6 +724,8 @@ namespace Neo.Ledger
                             snapshot.Validators.Delete(pubkey);
                     }
                     ECPoint[] votes = descriptor.Value.AsSerializableArray<ECPoint>().Distinct().ToArray();
+                    
+                    //修改validator个数的投票数
                     if (votes.Length != account.Votes.Length)
                     {
                         ValidatorsCountState count_state = snapshot.ValidatorsCount.GetAndChange();
@@ -676,7 +734,9 @@ namespace Neo.Ledger
                         if (votes.Length > 0)
                             count_state.Votes[votes.Length - 1] += balance;
                     }
+                    //为账户赋予新的投票
                     account.Votes = votes;
+                    //修改每个validator的票数
                     foreach (ECPoint pubkey in account.Votes)
                         snapshot.Validators.GetAndChange(pubkey, () => new ValidatorState(pubkey)).Votes += balance;
                     break;

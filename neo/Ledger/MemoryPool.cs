@@ -382,6 +382,7 @@ namespace Neo.Ledger
             try
             {
                 // First remove the transactions verified in the block.
+                //删除已经打包出块的交易
                 foreach (Transaction tx in block.Transactions)
                 {
                     if (TryRemoveVerified(tx.Hash, out _)) continue;
@@ -389,6 +390,7 @@ namespace Neo.Ledger
                 }
 
                 // Add all the previously verified transactions back to the unverified transactions
+                //将MomoryPool中所有没有出块的交易加入未验证交易集合
                 InvalidateVerifiedTransactions();
             }
             finally
@@ -398,6 +400,7 @@ namespace Neo.Ledger
 
             // If we know about headers of future blocks, no point in verifying transactions from the unverified tx pool
             // until we get caught up.
+            //如果有收到的区块块高没有赶上区块头高，则先同步区块；否则尝试在新共识区块中添加未验证的交易
             if (block.Index > 0 && block.Index < Blockchain.Singleton.HeaderHeight)
                 return;
 
@@ -406,8 +409,10 @@ namespace Neo.Ledger
 
             LoadMaxTxLimitsFromPolicyPlugins();
 
+            //重新验证高优先级的交易，并尝试在新共识中发送该交易
             ReverifyTransactions(_sortedHighPrioTransactions, _unverifiedSortedHighPriorityTransactions,
                 _maxTxPerBlock, MaxSecondsToReverifyHighPrioTx, snapshot);
+            //重新验证低优先级的交易，并尝试在新共识中发送该交易
             ReverifyTransactions(_sortedLowPrioTransactions, _unverifiedSortedLowPriorityTransactions,
                 _maxLowPriorityTxPerBlock, MaxSecondsToReverifyLowPrioTx, snapshot);
         }
@@ -433,6 +438,7 @@ namespace Neo.Ledger
             List<PoolItem> invalidItems = new List<PoolItem>();
 
             // Since unverifiedSortedTxPool is ordered in an ascending manner, we take from the end.
+            //从未验证交易池中取出单个区块最大交易数量的交易进行验证
             foreach (PoolItem item in unverifiedSortedTxPool.Reverse().Take(count))
             {
                 if (item.Tx.Verify(snapshot, _unsortedTransactions.Select(p => p.Value.Tx)))
@@ -446,14 +452,18 @@ namespace Neo.Ledger
             _txRwLock.EnterWriteLock();
             try
             {
+                //根据交易的优先级获取再广播的经历区块数
                 int blocksTillRebroadcast = Object.ReferenceEquals(unverifiedSortedTxPool, _sortedHighPrioTransactions)
                     ? BlocksTillRebroadcastHighPriorityPoolTx : BlocksTillRebroadcastLowPriorityPoolTx;
 
+                //如果交易量很大则增加再广播的经历区块数，即推迟广播
                 if (Count > RebroadcastMultiplierThreshold)
                     blocksTillRebroadcast = blocksTillRebroadcast * Count / RebroadcastMultiplierThreshold;
 
+                //计算再广播时间间隔
                 var rebroadcastCutOffTime = DateTime.UtcNow.AddSeconds(
                     -Blockchain.SecondsPerBlock * blocksTillRebroadcast);
+                //再验证通过的交易从未验证交易池移动到已验证交易池，如果时间超过了再广播时间点，就进行再广播
                 foreach (PoolItem item in reverifiedItems)
                 {
                     if (_unsortedTransactions.TryAdd(item.Tx.Hash, item))
@@ -470,7 +480,7 @@ namespace Neo.Ledger
                     _unverifiedTransactions.Remove(item.Tx.Hash);
                     unverifiedSortedTxPool.Remove(item);
                 }
-
+                //删除验证未通过的交易
                 foreach (PoolItem item in invalidItems)
                 {
                     _unverifiedTransactions.Remove(item.Tx.Hash);

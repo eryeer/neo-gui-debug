@@ -139,6 +139,7 @@ namespace Neo.UI
             }
         }
 
+        //更新钱包的资产统计
         private void Blockchain_PersistCompleted(Blockchain.PersistCompleted e)
         {
             if (IsDisposed) return;
@@ -570,27 +571,34 @@ namespace Neo.UI
         {
             Close();
         }
-
+        //转账按钮点击事件
         private void 转账TToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Transaction tx;
             UInt160 change_address;
             Fixed8 fee;
+            //打开转账输入面板，输入转账数据
             using (TransferDialog dialog = new TransferDialog())
             {
                 if (dialog.ShowDialog() != DialogResult.OK) return;
+                //输入转账后点击确定，封装transaction的output、attribute、
+                //以及非全局资产的script
                 tx = dialog.GetTransaction();
                 change_address = dialog.ChangeAddress;
+                //打赏网络费
                 fee = dialog.Fee;
             }
+            //如果是非全局资产转账还会开启调用合约对话框，计算gas
             if (tx is InvocationTransaction itx)
             {
                 using (InvokeContractDialog dialog = new InvokeContractDialog(itx))
                 {
                     if (dialog.ShowDialog() != DialogResult.OK) return;
+                    //封装transaction的input
                     tx = dialog.GetTransaction(change_address, fee);
                 }
             }
+            //签名并发送交易
             Helper.SignAndShowInformation(tx);
         }
 

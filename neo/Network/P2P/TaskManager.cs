@@ -48,18 +48,21 @@ namespace Neo.Network.P2P
 
         private void OnNewTasks(InvPayload payload)
         {
+            //根据sender获取session
             if (!sessions.TryGetValue(Sender, out TaskSession session))
                 return;
+            //区块高度小于区块头高度时要获取区块
             if (payload.Type == InventoryType.TX && Blockchain.Singleton.Height < Blockchain.Singleton.HeaderHeight)
             {
                 RequestTasks(session);
                 return;
             }
             HashSet<UInt256> hashes = new HashSet<UInt256>(payload.Hashes);
+            //排除已获取过的hash
             hashes.ExceptWith(knownHashes);
             if (payload.Type == InventoryType.Block)
                 session.AvailableTasks.UnionWith(hashes.Where(p => globalTasks.ContainsKey(p)));
-
+            //排除在已经在task中的hash
             hashes.ExceptWith(globalTasks.Keys);
             if (hashes.Count == 0)
             {
@@ -73,6 +76,7 @@ namespace Neo.Network.P2P
                 session.Tasks[hash] = DateTime.UtcNow;
             }
 
+            //向remotenode发送getdata消息
             foreach (InvPayload group in InvPayload.CreateGroup(payload.Type, hashes.ToArray()))
                 Sender.Tell(Message.Create("getdata", group));
         }
@@ -199,6 +203,8 @@ namespace Neo.Network.P2P
         private void RequestTasks(TaskSession session)
         {
             if (session.HasTask) return;
+
+            //发起已经在tasks表里的task请求
             if (session.AvailableTasks.Count > 0)
             {
                 session.AvailableTasks.ExceptWith(knownHashes);
